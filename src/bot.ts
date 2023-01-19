@@ -25,16 +25,13 @@ enum MessageType {
 
 const SINGLE_MESSAGE_MAX_SIZE = 500;
 export class ChatGPTBot {
-  // Record talkid with conversation id
   chatGPTPool = new ChatGPTPool();
-  chatPrivateTiggerKeyword = config.chatPrivateTiggerKeyword;
-  botName: string = "";
+  messageQueue: Message[] = []
+  chatPrivateTriggerKeyword = config.chatPrivateTriggerKeyword;
   ready = false;
+  botName: string = "";
   setBotName(botName: string) {
     this.botName = botName;
-  }
-  get chatGroupTiggerKeyword(): string {
-    return `@${this.botName}`;
   }
   async startGPTBot() {
     console.debug(`Start GPT Bot Config is:${JSON.stringify(config)}`);
@@ -43,67 +40,62 @@ export class ChatGPTBot {
     this.ready = true;
   }
   // TODO: Add reset conversation id and ping pong
-  async command(): Promise<void> {}
-  // remove more times conversation and mention
-  cleanMessage(rawText: string, privateChat: boolean = false): string {
+  async command(): Promise<void> { }
+  /**
+   * 格式化收到的消息
+   * remove more text via - - - - - - - - - - - - - - -
+   */
+  cleanMessage(rawText: string): string {
     let text = rawText;
     const item = rawText.split("- - - - - - - - - - - - - - -");
-    if (item.length > 1) {
+    if (item.length > 1) { // 回复类型的文本，要按斜杆分开
       text = item[item.length - 1];
     }
     text = text.replace(
-      privateChat ? this.chatPrivateTiggerKeyword : this.chatGroupTiggerKeyword,
+      this.chatPrivateTriggerKeyword,
       ""
     );
-    // remove more text via - - - - - - - - - - - - - - -
     return text;
   }
   async getGPTMessage(text: string, talkerId: string): Promise<string> {
     return await this.chatGPTPool.sendMessage(text, talkerId);
   }
-  // The message is segmented according to its size
-  async trySay(
-    talker: RoomInterface | ContactInterface,
-    mesasge: string
-  ): Promise<void> {
-    const messages: Array<string> = [];
-    let message = mesasge;
-    while (message.length > SINGLE_MESSAGE_MAX_SIZE) {
-      messages.push(message.slice(0, SINGLE_MESSAGE_MAX_SIZE));
-      message = message.slice(SINGLE_MESSAGE_MAX_SIZE);
-    }
-    messages.push(message);
-    for (const msg of messages) {
-      await talker.say(msg);
+  /**
+   * 获取发送实例
+   */
+  useSendItem(message: Message) {
+    const talker = message.talker(); // 发送消息的人
+    const room = message.room(); // 群聊
+    const realText = this.cleanMessage(message.text()) // 实际处理的文本
+
+    const responseObj = room
+      ? room
+      : talker.self() ? message.to() as ContactInterface : talker
+  
+    return { 
+      conversionId: responseObj.id, // 对话id
+      talker, // 发消息的人
+      room, // 房间
+      text: realText, // 真实交互的文本 
+      responseObj, // 回复信息的对象
+      say: (text: string, cut: boolean=true) => { // 发送消息
+        const sendText = cut && realText.length > 15
+          ?  `${realText.slice(0,12)}...\n- - - - -\n${text}` 
+          : `${realText}\n ------\n${text}`
+        return responseObj.say(sendText, talker)
+      },
     }
   }
-  // Check whether the ChatGPT processing can be triggered
-  tiggerGPTMessage(text: string, privateChat: boolean = false): boolean {
-    const chatPrivateTiggerKeyword = this.chatPrivateTiggerKeyword;
-    let triggered = false;
-    if (privateChat) {
-      triggered = chatPrivateTiggerKeyword
-        ? text.includes(chatPrivateTiggerKeyword)
-        : true;
-    } else {
-      triggered = text.includes(this.chatGroupTiggerKeyword);
-    }
-    if (triggered) {
-      console.log(`🎯 Triggered ChatGPT: ${text}`);
-    }
-    return triggered;
-  }
-  // Filter out the message that does not need to be processed
+  /**
+   * 判断是否是可触发消息类型
+   */
   isNonsense(
-    talker: ContactInterface,
     messageType: MessageType,
     text: string
   ): boolean {
     return (
-      talker.self() ||
       // TODO: add doc support
       messageType !== MessageType.Text ||
-      talker.name() == "微信团队" ||
       // 语音(视频)消息
       text.includes("收到一条视频/语音聊天消息，请在手机上查看") ||
       // 红包消息
@@ -114,41 +106,64 @@ export class ChatGPTBot {
       text.includes("/cgi-bin/mmwebwx-bin/webwxgetpubliclinkimg")
     );
   }
+  async onMessage() {
+    const message = this.messageQueue[0]
+    if (!message) return
 
-  async onPrivateMessage(talker: ContactInterface, text: string) {
-    const talkerId = talker.id;
-    const gptMessage = await this.getGPTMessage(text, talkerId);
-    await this.trySay(talker, gptMessage);
-  }
+    try {
+      const { conversionId, say, text } = this.useSendItem(message)
 
-  async onGroupMessage(
-    talker: ContactInterface,
-    text: string,
-    room: RoomInterface
-  ) {
-    const talkerId = room.id + talker.id;
-    const gptMessage = await this.getGPTMessage(text, talkerId);
-    const result = `${text}\n ------\n ${gptMessage}`;
-    await this.trySay(room, result);
+      console.log(`处理这条消息: ${message}`)
+
+      /* 发送提示消息 */
+      await say("给我点时间思考一下")
+
+      /* 发送消息 */
+      const gptMessage = await this.getGPTMessage(text, conversionId);
+      await say(gptMessage);
+
+      console.log(`回复这条消息: ${message}`, this.messageQueue.length-1)
+    } catch (err) {
+      console.log(err)
+    }
+
+    /* 弹出当前消息 */
+    this.messageQueue.shift()
+    /* 递归执行一次发送 */
+    this.onMessage()
   }
-  async onMessage(message: Message) {
-    const talker = message.talker();
+  /**
+   * 预发送。把需要发送的消息放到队列里
+   */
+  async preSendMessage(message: Message) {
     const rawText = message.text();
-    const room = message.room();
     const messageType = message.type();
-    const privateChat = !room;
-    if (this.isNonsense(talker, messageType, rawText)) {
+
+    /* 判断消息类型，如果不是合适类型则去掉 */
+    if (this.isNonsense(messageType, rawText)) {
       return;
     }
-    if (this.tiggerGPTMessage(rawText, privateChat)) {
-      const text = this.cleanMessage(rawText, privateChat);
-      if (privateChat) {
-        return await this.onPrivateMessage(talker, text);
-      } else {
-        return await this.onGroupMessage(talker, text, room);
-      }
+
+    /* 判断消息是否满足关键词触发 */
+    if (!rawText.startsWith(this.chatPrivateTriggerKeyword)) {
+      return
+    }
+
+    const { conversionId, say, text } = this.useSendItem(message)
+
+    /* 重置 */
+    if(text.startsWith('reset')) {
+      this.chatGPTPool.resetConversation(conversionId)
+      say("♻️ 我们重新开始吧")
+      return
+    }
+
+    this.messageQueue.push(message)
+
+    if (this.messageQueue.length === 1) {
+      await this.onMessage()
     } else {
-      return;
+      say(`稍等，前面还有${this.messageQueue.length - 1}个问题`)
     }
   }
 }

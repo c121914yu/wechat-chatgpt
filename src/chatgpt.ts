@@ -20,7 +20,6 @@ const ErrorCode2Message: Record<string, string> = {
     "OpenAI 服务器拒绝访问，请稍后再试| The OpenAI server refused to access, please try again later",
   unknown: "未知错误，请看日志 | Error unknown, please see the log",
 };
-const Commands = ["/reset", "/help"] as const;
 export class ChatGPTPool {
   chatGPTPools: Array<IChatGPTItem> | [] = [];
   conversationsPool: Map<string, IConversationItem> = new Map();
@@ -86,35 +85,11 @@ export class ChatGPTPool {
         );
       }
     }
-    // this.chatGPTPools = await Promise.all(
-    //   config.chatGPTAccountPool.map(async (account) => {
-    //     const chatGpt = new ChatGPTAPIBrowser({
-    //       ...account,
-    //       proxyServer: config.openAIProxy,
-    //     });
-    //     await chatGpt.initSession();
-    //     return {
-    //       chatGpt: chatGpt,
-    //       account: account,
-    //     };
-    //   })
-    // );
     this.chatGPTPools = chatGPTPools;
     if (this.chatGPTPools.length === 0) {
       throw new Error("⚠️ No chatgpt account in pool");
     }
     console.log(`ChatGPTPools: ${this.chatGPTPools.length}`);
-  }
-  async command(cmd: typeof Commands[number], talkid: string): Promise<string> {
-    console.log(`command: ${cmd} talkid: ${talkid}`);
-    if (cmd == "/reset") {
-      this.resetConversation(talkid);
-      return "♻️ 已重置对话 ｜ Conversation reset";
-    }
-    if (cmd == "/help") {
-      return `🧾 支持的命令｜Support command：${Commands.join("，")}`;
-    }
-    return "❓ 未知命令｜Unknow Command";
   }
   // Randome get chatgpt item form pool
   get chatGPTAPI(): IChatGPTItem {
@@ -150,13 +125,6 @@ export class ChatGPTPool {
   }
   // send message with talkid
   async sendMessage(message: string, talkid: string): Promise<string> {
-    if (
-      Commands.some((cmd) => {
-        return message.startsWith(cmd);
-      })
-    ) {
-      return this.command(message as typeof Commands[number], talkid);
-    }
     const conversationItem = this.getConversation(talkid);
     const { conversation, account, conversationId, messageId } =
       conversationItem;
